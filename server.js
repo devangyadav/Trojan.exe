@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import { connectDB } from "./config/db.config.js";
 import expenseRoutes from "./routes/expense.routes.js";
-import { ApiError } from "./utils/apiError.js";
+import { ApiError } from "./utils/ApiError.js";
 
 dotenv.config();
 connectDB();
