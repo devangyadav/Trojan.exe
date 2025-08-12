@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
@@ -9,18 +10,45 @@ dotenv.config();
 connectDB();
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
-// ================== Expense Tracker Routes ==================
+// NOTE: This sets a response header. ngrok's web warning is shown BEFORE your server for browser visits,
+// so this line helps programmatic clients that respect the header, but won't change the browser first-visit warning.
+app.use((req, res, next) => {
+  res.setHeader("ngrok-skip-browser-warning", "true");
+  next();
+});
+
+// ================== Expense Tracker API ==================
 app.use("/api/expense", expenseRoutes);
 
-// ================== MCP Endpoint ==================
-app.post("/mcp", (req, res) => {
-  const { id, method, params } = req.body;
+// ================== MCP endpoint (single JSON-RPC handler) ==================
+const AUTH_TOKEN = process.env.AUTH_TOKEN || my_secret_token;
+const PHONE_NUMBER = process.env.PHONE_NUMBER;
 
-  // Basic validation of MCP request
+// Helpful simple GET for probes (no auth) — many services do a quick GET before POST
+app.get("/mcp", (req, res) => {
+  res.json({ message: "MCP server online — use POST /mcp for JSON-RPC", status: "ok" });
+});
+
+app.post("/mcp", (req, res) => {
+  // debug log to terminal — remove or reduce in production
+  console.log("[MCP] incoming request:", { headers: req.headers, bodySummary: { method: req.body?.method, id: req.body?.id } });
+
+  const authHeader = req.headers.authorization || "";
+  // Validate Bearer token first (so Puch sees auth error if wrong)
+  if (!authHeader || authHeader !== `Bearer ${AUTH_TOKEN}`) {
+    console.warn("[MCP] auth failed:", authHeader);
+    return res.status(403).json({
+      jsonrpc: "2.0",
+      id: req.body?.id ?? null,
+      error: { code: -32001, message: "Forbidden: Invalid or missing token" }
+    });
+  }
+
+  const { id, method, params } = req.body || {};
+
   if (!id || !method) {
     return res.json({
       jsonrpc: "2.0",
@@ -29,7 +57,7 @@ app.post("/mcp", (req, res) => {
     });
   }
 
-  // Init handshake
+  // ---- initialize handshake ----
   if (method === "initialize") {
     return res.json({
       jsonrpc: "2.0",
@@ -37,15 +65,12 @@ app.post("/mcp", (req, res) => {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: {
-          name: "merged-mcp-server",
-          version: "1.0.0"
-        }
+        serverInfo: { name: "merged-mcp-server", version: "1.0.0" }
       }
     });
   }
 
-  // List tools
+  // ---- list tools ----
   if (method === "tools/list") {
     return res.json({
       jsonrpc: "2.0",
@@ -74,64 +99,48 @@ app.post("/mcp", (req, res) => {
     });
   }
 
-  // Handle tool calls
+  // ---- handle tool calls ----
   if (method === "tools/call") {
     const { name, arguments: args = {} } = params || {};
 
-    // ====== validate tool ======
+    // validate tool -> returns phone number if token arg matches
     if (name === "validate") {
-      const token = args.token;
-
-      if (!token) {
+      const tokenArg = args.token;
+      if (!tokenArg) {
         return res.json({
           jsonrpc: "2.0",
           id,
-          error: {
-            code: -32602,
-            message: "Missing required parameter: token"
-          }
+          error: { code: -32602, message: "Missing required parameter: token" }
         });
       }
 
-      // token validation , 
-      const validToken = process.env.AUTH_TOKEN || "my_secret_token";
-      const phoneNumber = process.env.PHONE_NUMBER || "919876543210";
-
-      if (token === validToken) {
+      if (tokenArg === AUTH_TOKEN) {
         return res.json({
           jsonrpc: "2.0",
           id,
-          result: {
-            content: [{ type: "text", text: phoneNumber }]
-          }
+          result: { content: [{ type: "text", text: PHONE_NUMBER }] }
         });
       } else {
         return res.json({
           jsonrpc: "2.0",
           id,
-          error: {
-            code: -32001,
-            message: "Invalid bearer token"
-          }
+          error: { code: -32001, message: "Invalid bearer token" }
         });
       }
     }
 
-    // ====== hello tool ======
+    // hello tool
     if (name === "hello") {
       const greeting = `Hello ${args.name || "World"}! This is my merged MCP + Expense server 🚀`;
       return res.json({
         jsonrpc: "2.0",
         id,
-        result: {
-          content: [{ type: "text", text: greeting }],
-          isError: false
-        }
+        result: { content: [{ type: "text", text: greeting }], isError: false }
       });
     }
   }
 
-  // Unknown method
+  // ---- unknown method ----
   return res.json({
     jsonrpc: "2.0",
     id,
@@ -139,18 +148,15 @@ app.post("/mcp", (req, res) => {
   });
 });
 
-//  Error Handling Middleware 
+// ================== Common Error Handling ==================
 app.use((err, req, res, next) => {
   console.error(err);
   if (err instanceof ApiError) {
-    return res.status(err.statusCode).json({
-      success: false,
-      message: err.message
-    });
+    return res.status(err.statusCode).json({ success: false, message: err.message });
   }
   res.status(500).json({ success: false, message: "Internal Server Error" });
 });
 
-// Start Server 
+// ================== Start Server ==================
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
